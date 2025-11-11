@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from datetime import datetime
 
 from pymodbus import ExceptionResponse, ModbusException
 from pymodbus.client import AsyncModbusTcpClient
@@ -35,7 +36,7 @@ class ModbusAPI:
         self._connected: bool = False
         self._connect_pending: bool = False
         self._failed_reconnect_counter: int = 0
-        self._last_connection_try: Any = None
+        self._last_reconnect_start: datetime = datetime.now()
         self._modbus_client: AsyncModbusTcpClient = AsyncModbusTcpClient(
             host=self._ip, port=self._port, name="Weishaupt_WBB", retries=1
         )
@@ -43,16 +44,32 @@ class ModbusAPI:
     async def connect(self, startup: bool = False) -> bool:
         """Open modbus connection."""
         if self._connect_pending:
-            _LOGGER.warning("Connection to heatpump already pending")
+            elapsed = (datetime.now() - self._last_reconnect_start).total_seconds()
+            if elapsed > 900:
+                _LOGGER.warning(
+                    "Reconnect still pending after %ss, forcing retry.", 900
+                )
+                # Wir beenden den alten Versuch hart
+                if self._modbus_client.connected == False:
+                    self._last_reconnect_start = datetime.now()
+                    await self._modbus_client.connect()
+                if self._modbus_client.connected == True:
+                    self._connect_pending = False
+                    _LOGGER.warning("Reconnect successful.")
+            else:
+                _LOGGER.debug(
+                    "Connection still pending (%ds since reconnect start)", int(elapsed)
+                )
             return self._modbus_client.connected
         try:
             self._connect_pending = True
             if self._failed_reconnect_counter >= 3 and not startup:
                 _LOGGER.warning(
-                    "Connection to heatpump failed %s times. Waiting 15 minutes",
+                    "Connection to heatpump failed %s times. Waiting 5 minutes",
                     str(self._failed_reconnect_counter),
                 )
                 await asyncio.sleep(300)
+            self._last_reconnect_start = datetime.now()
             await self._modbus_client.connect()
             if self._modbus_client.connected:
                 # _LOGGER.warning("Connection to heatpump succeeded")
